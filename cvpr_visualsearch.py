@@ -90,3 +90,44 @@ if ALLFEAT.shape[0] > 0:
     plt.ylabel('True Label')
     plt.title('Confusion Matrix')
     plt.show()
+
+
+# Spatial Grid Extraction Function
+def extract_spatial_grid_histogram(img, bins_per_channel=8, grid_size=3):
+    # Convert image to uint8 if necessary
+    if img.dtype != np.uint8:
+        img = (img * 255).astype('uint8')
+
+    # Divide the image into a grid
+    h, w, _ = img.shape
+    grid_h, grid_w = h // grid_size, w // grid_size
+
+    hist = []
+    for row in range(grid_size):
+        for col in range(grid_size):
+            # Extract the grid cell
+            cell = img[row * grid_h:(row + 1) * grid_h, col * grid_w:(col + 1) * grid_w]
+
+            # Compute histogram for each channel (R, G, B)
+            hist_r = cv2.calcHist([cell], [0], None, [bins_per_channel], [0, 256])
+            hist_g = cv2.calcHist([cell], [1], None, [bins_per_channel], [0, 256])
+            hist_b = cv2.calcHist([cell], [2], None, [bins_per_channel], [0, 256])
+
+            # Concatenate and normalize the histograms
+            cell_hist = np.concatenate([hist_r, hist_g, hist_b]).flatten()
+            cell_hist /= (cell_hist.sum() + 1e-5)  # Normalize to sum to 1, avoid division by zero
+            hist.extend(cell_hist)
+
+    return np.array(hist)
+
+
+# Update feature extraction to use spatial grid
+for filename in os.listdir(os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER)):
+    if filename.endswith('.mat'):
+        img_path = os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER, filename)
+        img_actual_path = os.path.join(IMAGE_FOLDER, 'Images', filename.replace(".mat", ".bmp"))
+        img = cv2.imread(img_actual_path)
+        if img is not None:
+            F = extract_spatial_grid_histogram(img)
+            fout = os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER, filename)
+            sio.savemat(fout, {'F': F})
