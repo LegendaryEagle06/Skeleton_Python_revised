@@ -4,9 +4,10 @@ import scipy.io as sio
 import cv2
 from random import randint
 from cvpr_compare import cvpr_compare
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import precision_recall_curve, confusion_matrix
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 DESCRIPTOR_FOLDER = 'descriptors'
 DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
@@ -18,51 +19,74 @@ ALLFILES = []
 for filename in os.listdir(os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER)):
     if filename.endswith('.mat'):
         img_path = os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER, filename)
-        img_actual_path = os.path.join(IMAGE_FOLDER, 'Images', filename).replace(".mat", ".bmp")
+        img_actual_path = os.path.join(IMAGE_FOLDER, 'Images', filename.replace(".mat", ".bmp"))
         img_data = sio.loadmat(img_path)
-        ALLFILES.append(img_actual_path)
-        ALLFEAT.append(img_data['F'][0])  # Assuming F is a 1D array
+        if 'F' in img_data:
+            ALLFILES.append(img_actual_path)
+            ALLFEAT.append(img_data['F'].flatten())  # Ensure F is flattened
 
 # Convert ALLFEAT to a numpy array
 ALLFEAT = np.array(ALLFEAT)
 
 # Apply PCA for dimensionality reduction
-pca = PCA(n_components=15)
-ALLFEAT = pca.fit_transform(ALLFEAT)
+if ALLFEAT.shape[0] > 0:
+    pca = PCA(n_components=min(15, ALLFEAT.shape[1]))
+    ALLFEAT = pca.fit_transform(ALLFEAT)
 
-# Pick a random image as the query
-NIMG = ALLFEAT.shape[0]
-queryimg = randint(0, NIMG - 1)
+    # Compute the covariance matrix for Mahalanobis distance
+    covariance_matrix = np.cov(ALLFEAT, rowvar=False)
 
-# Compute the distance between the query and all other descriptors
-dst = []
-query = ALLFEAT[queryimg]
-for i in range(NIMG):
-    candidate = ALLFEAT[i]
-    distance = cvpr_compare(query, candidate)
-    dst.append((distance, i))
+    # Pick a random image as the query
+    NIMG = ALLFEAT.shape[0]
+    queryimg = randint(0, NIMG - 1)
 
-# Sort the distances
-dst.sort(key=lambda x: x[0])
+    # Compute the distance between the query and all other descriptors
+    dst = []
+    query = ALLFEAT[queryimg]
+    for i in range(NIMG):
+        candidate = ALLFEAT[i]
+        distance = cvpr_compare(query, candidate, covariance_matrix)
+        dst.append((distance, i))
 
-# Show the top 15 results
-SHOW = 15
-for i in range(SHOW):
-    img = cv2.imread(ALLFILES[dst[i][1]])
-    img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2))  # Make image quarter size
-    cv2.imshow(f"Result {i+1}", img)
-    cv2.waitKey(0)
-cv2.destroyAllWindows()
+    # Sort the distances
+    dst.sort(key=lambda x: x[0])
 
-# Precision-Recall Evaluation
-relevant_images = [1 if i < 10 else 0 for i in range(NIMG)]  # Assuming top 10 are relevant
-predicted_scores = [1 / (x[0] + 1e-5) for x in dst]  # Inverse of distance as relevance score
+    # Show the top 15 results
+    SHOW = min(15, NIMG)
+    for i in range(SHOW):
+        img = cv2.imread(ALLFILES[dst[i][1]])
+        if img is not None:
+            img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2))  # Make image quarter size
+            cv2.imshow(f"Result {i + 1}", img)
+            cv2.setWindowTitle(f"Result {i + 1}", f"Result {i + 1}")
+            cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
-precision, recall, _ = precision_recall_curve(relevant_images, predicted_scores)
+    # Precision-Recall Evaluation
+    relevant_images = [0 for _ in range(NIMG)]  # Assume none are relevant initially
+    predicted_scores = [1 / (x[0] + 1e-5) for x in dst]  # Inverse of distance as relevance score
 
-# Plot Precision-Recall curve
-plt.plot(recall, precision, marker='.')
-plt.xlabel('Recall')
-plt.ylabel('Precision')
-plt.title('Precision-Recall Curve')
-plt.show()
+    precision, recall, _ = precision_recall_curve(relevant_images, predicted_scores)
+
+    # Plot Precision-Recall curve
+    plt.plot(recall, precision, marker='.')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.show()
+
+    # Confusion Matrix Evaluation
+    # Define a threshold for classification (e.g., top 10 images are considered as relevant)
+    threshold = sorted(predicted_scores, reverse=True)[9]  # Score of the 10th highest-ranked image
+    predicted_labels = [1 if score >= threshold else 0 for score in predicted_scores]
+
+    # Compute the confusion matrix
+    cm = confusion_matrix(relevant_images, predicted_labels)
+
+    # Plot the confusion matrix
+    plt.figure(figsize=(6, 4))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
+    plt.xlabel('Predicted Label')
+    plt.ylabel('True Label')
+    plt.title('Confusion Matrix')
+    plt.show()
