@@ -8,6 +8,7 @@ from sklearn.metrics import precision_recall_curve, confusion_matrix
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy.spatial import distance
 
 DESCRIPTOR_FOLDER = 'descriptors'
 DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
@@ -40,31 +41,43 @@ if ALLFEAT.shape[0] > 0:
     NIMG = ALLFEAT.shape[0]
     queryimg = randint(0, NIMG - 1)
 
-    # Compute the distance between the query and all other descriptors
-    dst = []
+    # Compute the distance between the query and all other descriptors using multiple distance metrics
+    dst_euclidean = []
+    dst_l1 = []
+    dst_mahalanobis = []
     query = ALLFEAT[queryimg]
     for i in range(NIMG):
         candidate = ALLFEAT[i]
-        distance = cvpr_compare(query, candidate, covariance_matrix)
-        dst.append((distance, i))
+        euclidean_distance = np.linalg.norm(query - candidate)
+        l1_distance = np.sum(np.abs(query - candidate))
+        mahalanobis_distance = distance.mahalanobis(query, candidate, np.linalg.inv(covariance_matrix))
+        dst_euclidean.append((euclidean_distance, i))
+        dst_l1.append((l1_distance, i))
+        dst_mahalanobis.append((mahalanobis_distance, i))
 
     # Sort the distances
-    dst.sort(key=lambda x: x[0])
+    dst_euclidean.sort(key=lambda x: x[0])
+    dst_l1.sort(key=lambda x: x[0])
+    dst_mahalanobis.sort(key=lambda x: x[0])
 
-    # Show the top 15 results
-    SHOW = min(15, NIMG)
-    for i in range(SHOW):
-        img = cv2.imread(ALLFILES[dst[i][1]])
-        if img is not None:
-            img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2))  # Make image quarter size
-            cv2.imshow(f"Result {i + 1}", img)
-            cv2.setWindowTitle(f"Result {i + 1}", f"Result {i + 1}")
-            cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # Show the top 5 results for each distance metric
+    SHOW = min(5, NIMG)
+    metrics = [("Euclidean", dst_euclidean), ("L1", dst_l1), ("Mahalanobis", dst_mahalanobis)]
+    for metric_name, dst in metrics:
+        print(f"Top {SHOW} results using {metric_name} distance:")
+        for i in range(SHOW):
+            img = cv2.imread(ALLFILES[dst[i][1]])
+            if img is not None:
+                img = cv2.resize(img, (img.shape[1] // 2, img.shape[0] // 2))  # Make image quarter size
+                cv2.imshow(f"{metric_name} Result {i + 1}", img)
+                cv2.setWindowTitle(f"{metric_name} Result {i + 1}", f"{metric_name} Result {i + 1}")
+                cv2.waitKey(0)
+        cv2.destroyAllWindows()
 
-    # Precision-Recall Evaluation
-    relevant_images = [0 for _ in range(NIMG)]  # Assume none are relevant initially
-    predicted_scores = [1 / (x[0] + 1e-5) for x in dst]  # Inverse of distance as relevance score
+    # Precision-Recall Evaluation for Euclidean Distance
+    # Mark top 10 retrieved images as relevant
+    relevant_images = [1 if i < 10 else 0 for i in range(NIMG)]  # Top 10 images are assumed relevant
+    predicted_scores = [1 / (x[0] + 1e-5) for x in dst_euclidean]  # Inverse of distance as relevance score
 
     precision, recall, _ = precision_recall_curve(relevant_images, predicted_scores)
 
@@ -72,11 +85,10 @@ if ALLFEAT.shape[0] > 0:
     plt.plot(recall, precision, marker='.')
     plt.xlabel('Recall')
     plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
+    plt.title('Precision-Recall Curve (Euclidean Distance)')
     plt.show()
 
-    # Confusion Matrix Evaluation
-    # Define a threshold for classification (e.g., top 10 images are considered as relevant)
+    # Confusion Matrix Evaluation for Euclidean Distance
     threshold = sorted(predicted_scores, reverse=True)[9]  # Score of the 10th highest-ranked image
     predicted_labels = [1 if score >= threshold else 0 for score in predicted_scores]
 
@@ -88,7 +100,7 @@ if ALLFEAT.shape[0] > 0:
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
     plt.xlabel('Predicted Label')
     plt.ylabel('True Label')
-    plt.title('Confusion Matrix')
+    plt.title('Confusion Matrix (Euclidean Distance)')
     plt.show()
 
 
