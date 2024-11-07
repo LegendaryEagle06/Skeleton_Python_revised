@@ -2,7 +2,7 @@ import os
 import numpy as np
 import cv2
 import scipy.io as sio
-from extractRandom import extractRandom
+from extractRandom import extractColorHistogram
 
 DATASET_FOLDER = 'MSRC_ObjCategImageDatabase_v2'
 OUT_FOLDER = 'descriptors'
@@ -20,7 +20,7 @@ for filename in os.listdir(os.path.join(DATASET_FOLDER, 'Images')):
         fout = os.path.join(OUT_FOLDER, OUT_SUBFOLDER, filename.replace('.bmp', '.mat'))
         
         # Call extractRandom (or another feature extraction function) to get the descriptor
-        F = extractRandom(img)
+        F = extractColorHistogram(img)
         
         # Save the descriptor to a .mat file
         sio.savemat(fout, {'F': F})
