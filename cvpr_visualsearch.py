@@ -20,12 +20,15 @@ DESCRIPTOR_FOLDER = 'descriptors'
 DESCRIPTOR_SUBFOLDER = 'globalRGBhisto'
 IMAGE_FOLDER = 'MSRC_ObjCategImageDatabase_v2'
 CODEBOOK_SIZE = 50
+PCA_COMPONENTS = 50  # Number of components for PCA
+
 
 # Bag of Visual Words Extraction Function
 def extract_sift_descriptors(img):
     sift = cv2.SIFT_create()
     keypoints, descriptors = sift.detectAndCompute(img, None)
     return descriptors
+
 
 # Create a codebook using k-means clustering
 all_descriptors = []
@@ -35,7 +38,7 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
         if filename.endswith('.bmp'):
             img_path = os.path.join(IMAGE_FOLDER, 'Images', filename)
             futures.append(executor.submit(cv2.imread, img_path, cv2.IMREAD_GRAYSCALE))
-    
+
     for future in concurrent.futures.as_completed(futures):
         img = future.result()
         if img is not None:
@@ -46,28 +49,32 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
 all_descriptors = np.array(all_descriptors)
 print(f"Clustering {len(all_descriptors)} descriptors into {CODEBOOK_SIZE} visual words...")
 
+
 # Use multi-threading to speed up k-means clustering
 def run_kmeans(descriptors, n_clusters, random_state):
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
     kmeans.fit(descriptors)
     return kmeans
 
+
 with concurrent.futures.ThreadPoolExecutor() as executor:
     future_kmeans = executor.submit(run_kmeans, all_descriptors, CODEBOOK_SIZE, 42)
     kmeans = future_kmeans.result()
     codebook = kmeans.cluster_centers_
+
 
 # Extract BoVW histograms for each image
 def extract_bovw_histogram(img, codebook, kmeans):
     descriptors = extract_sift_descriptors(img)
     if descriptors is None:
         return np.zeros(len(codebook))
-    
+
     labels = kmeans.predict(descriptors)
     hist, _ = np.histogram(labels, bins=np.arange(len(codebook) + 1))
     hist = hist.astype('float32')
     hist /= (hist.sum() + 1e-5)  # Normalize to sum to 1
     return hist
+
 
 # Load all BoVW descriptors
 ALLFEAT_BOVW = []
@@ -78,8 +85,9 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
         if filename.endswith('.bmp'):
             img_path = os.path.join(IMAGE_FOLDER, 'Images', filename)
             futures.append(executor.submit(cv2.imread, img_path, cv2.IMREAD_GRAYSCALE))
-    
-    for future, filename in zip(concurrent.futures.as_completed(futures), os.listdir(os.path.join(IMAGE_FOLDER, 'Images'))):
+
+    for future, filename in zip(concurrent.futures.as_completed(futures),
+                                os.listdir(os.path.join(IMAGE_FOLDER, 'Images'))):
         img = future.result()
         if img is not None:
             bovw_hist = extract_bovw_histogram(img, codebook, kmeans)
@@ -88,31 +96,39 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
 
 ALLFEAT_BOVW = np.array(ALLFEAT_BOVW)
 
+# Apply PCA to reduce dimensionality of BoVW descriptors
+pca = PCA(n_components=PCA_COMPONENTS)
+ALLFEAT_BOVW_PCA = pca.fit_transform(ALLFEAT_BOVW)
+print(f"Reduced dimensionality of BoVW descriptors to {PCA_COMPONENTS} components using PCA.")
+
 # Pick a random image as the query
-NIMG = ALLFEAT_BOVW.shape[0]
+NIMG = ALLFEAT_BOVW_PCA.shape[0]
 queryimg = randint(0, NIMG - 1)
-query = ALLFEAT_BOVW[queryimg]
+query = ALLFEAT_BOVW_PCA[queryimg]
 
 # Compute the distance between the query and all other BoVW descriptors
+# Using Mahalanobis distance with PCA reduced features
+cov_matrix = np.cov(ALLFEAT_BOVW_PCA, rowvar=False)
+cov_inv = np.linalg.inv(cov_matrix)
 dst_bovw = []
 seen_indices = set([queryimg])
 with concurrent.futures.ThreadPoolExecutor() as executor:
     futures = []
     for i in range(NIMG):
         if i not in seen_indices:
-            futures.append(executor.submit(np.linalg.norm, query - ALLFEAT_BOVW[i]))
-    
+            futures.append(executor.submit(distance.mahalanobis, query, ALLFEAT_BOVW_PCA[i], cov_inv))
+
     for future, i in zip(concurrent.futures.as_completed(futures), range(NIMG)):
         if i not in seen_indices:
-            distance = future.result()
-            dst_bovw.append((distance, i))
+            distance_value = future.result()
+            dst_bovw.append((distance_value, i))
 
 # Sort the distances
 dst_bovw.sort(key=lambda x: x[0])
 
 # Show the top 5 results using BoVW in a dynamic grid format
 SHOW = min(5, NIMG)
-print(f"Top {SHOW} results using Bag of Visual Words (BoVW):")
+print(f"Top {SHOW} results using Bag of Visual Words (BoVW) with PCA:")
 shown_indices = seen_indices.copy()
 
 grid_size = math.ceil(math.sqrt(SHOW))
@@ -127,14 +143,15 @@ for i in range(SHOW):
             img = cv2.resize(img, (cell_width, cell_height))
             row, col = divmod(i, grid_size)
             result_window[row * cell_height:(row + 1) * cell_height, col * cell_width:(col + 1) * cell_width] = img
-            cv2.putText(result_window, f'Result {i + 1}', (col * cell_width + 10, row * cell_height + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(result_window, f'Result {i + 1}', (col * cell_width + 10, row * cell_height + 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         shown_indices.add(img_idx)
 
-cv2.imshow('BoVW Results', result_window)
+cv2.imshow('BoVW Results with PCA', result_window)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
-# Precision-Recall Evaluation for BoVW
+# Precision-Recall Evaluation for BoVW with PCA
 scaler = MinMaxScaler()
 predicted_scores = np.array([x[0] for x in dst_bovw]).reshape(-1, 1)
 predicted_scores = scaler.fit_transform(predicted_scores).flatten()  # Normalize distances to [0, 1]
@@ -153,52 +170,69 @@ precision, recall, _ = precision_recall_curve(relevant_images, predicted_scores)
 plt.plot(recall, precision, marker='.')
 plt.xlabel('Recall')
 plt.ylabel('Precision')
-plt.title('Precision-Recall Curve (BoVW)')
+plt.title('Precision-Recall Curve (BoVW with PCA)')
 plt.show()
 
-# Confusion Matrix Evaluation for BoVW
+# Confusion Matrix Evaluation for BoVW with PCA
 # Use an adaptive threshold based on the median score
 threshold = np.median(predicted_scores)
 predicted_labels = [1 if score >= threshold else 0 for score in predicted_scores]
 
 # Compute the confusion matrix
-cm = confusion_matrix(relevant_images, predicted_labels)
+cm = confusion_matrix(relevant_images, predicted_labels, labels=[0, 1])
 
-# Plot the confusion matrix
+# Plot the confusion matrix with class labels
+class_names = ['Not Relevant', 'Relevant']
 plt.figure(figsize=(6, 4))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False)
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False, xticklabels=class_names, yticklabels=class_names)
 plt.xlabel('Predicted Label')
 plt.ylabel('True Label')
-plt.title('Confusion Matrix (BoVW)')
+plt.title('Confusion Matrix (BoVW with PCA)')
 plt.show()
+
+# Train an SVM Classifier for Object Classification using PCA-reduced features
+svm = SVC(kernel='linear', probability=True, random_state=42)
+labels = []
+for i in range(NIMG):
+    # Assign random labels for demonstration purposes (1 or 0)
+    labels.append(1 if i in relevant_indices else 0)
+
+# Train SVM on BoVW PCA-reduced histograms
+svm.fit(ALLFEAT_BOVW_PCA, labels)
+
+# Predict category for query image
+query_label = svm.predict([query])[0]
+print(f"The predicted category for the query image is: {'Relevant' if query_label == 1 else 'Not Relevant'}")
+
 
 # Spatial Grid Extraction Function
 def extract_spatial_grid_histogram(img, bins_per_channel=8, grid_size=3):
     # Convert image to uint8 if necessary
     if img.dtype != np.uint8:
         img = (img * 255).astype('uint8')
-    
+
     # Divide the image into a grid
     h, w, _ = img.shape
     grid_h, grid_w = h // grid_size, w // grid_size
-    
+
     hist = []
     for row in range(grid_size):
         for col in range(grid_size):
             # Extract the grid cell
             cell = img[row * grid_h:(row + 1) * grid_h, col * grid_w:(col + 1) * grid_w]
-            
+
             # Compute histogram for each channel (R, G, B)
             hist_r = cv2.calcHist([cell], [0], None, [bins_per_channel], [0, 256])
             hist_g = cv2.calcHist([cell], [1], None, [bins_per_channel], [0, 256])
             hist_b = cv2.calcHist([cell], [2], None, [bins_per_channel], [0, 256])
-            
+
             # Concatenate and normalize the histograms
             cell_hist = np.concatenate([hist_r, hist_g, hist_b]).flatten()
             cell_hist /= (cell_hist.sum() + 1e-5)  # Normalize to sum to 1, avoid division by zero
             hist.extend(cell_hist)
-    
+
     return np.array(hist)
+
 
 # Update feature extraction to use spatial grid
 with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -208,8 +242,9 @@ with concurrent.futures.ThreadPoolExecutor() as executor:
             img_path = os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER, filename)
             img_actual_path = os.path.join(IMAGE_FOLDER, 'Images', filename.replace(".mat", ".bmp"))
             futures.append(executor.submit(cv2.imread, img_actual_path))
-        
-    for future, filename in zip(concurrent.futures.as_completed(futures), os.listdir(os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER))):
+
+    for future, filename in zip(concurrent.futures.as_completed(futures),
+                                os.listdir(os.path.join(DESCRIPTOR_FOLDER, DESCRIPTOR_SUBFOLDER))):
         img = future.result()
         if img is not None:
             F = extract_spatial_grid_histogram(img)
